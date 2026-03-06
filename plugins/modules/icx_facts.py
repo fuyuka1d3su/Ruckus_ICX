@@ -140,10 +140,10 @@ class FactsBase(object):
         self.responses = None
 
     def populate(self):
-        self.responses = run_commands(self.module, commands=self.COMMANDS, check_rc=False)
+        self.responses = run_commands(self.module, commands=self.COMMANDS)
 
     def run(self, cmd):
-        return run_commands(self.module, commands=cmd, check_rc=False)
+        return run_commands(self.module, commands=cmd)
 
 
 class Default(FactsBase):
@@ -154,7 +154,7 @@ class Default(FactsBase):
         super(Default, self).run(['skip'])
         super(Default, self).populate()
         data = self.responses[2]
-        det = {}
+        det = dict()
         if data:
             det = self.parse_unit(data)
 
@@ -164,23 +164,40 @@ class Default(FactsBase):
             self.facts['model'] = self.parse_model(data)
             self.facts['image'] = self.parse_image(data)
             self.facts['hostname'] = self.parse_hostname(self.responses[0])
-            self.facts['info'] = 'Unit' + det['Unit'] + ':' + det['model'] + ', ' + self.parse_serialnum(data, det['Unit'])
+            unit = det.get('Unit') or self.parse_primary_unit(data)
+            model = det.get('model') or self.facts.get('model')
+            serial = self.parse_serialnum(data, unit)
+            if serial:
+                self.facts['serialnum'] = serial
+
+            if unit:
+                info = 'Unit' + unit
+                if model:
+                    info += ':' + model
+                if serial:
+                    info += ', ' + serial
+            else:
+                info = ', '.join([v for v in [model, serial] if v])
+
+            if info:
+                self.facts['info'] = info
             self.parse_stacks(data)
 
-    def parse_serialnum(self, data, unit):
-        try:
-            match1 = re.search("UNIT " + unit + ": SL .*?. Software", data, re.DOTALL)
-            if match1:
-                line = match1.group(0)
-                match2 = re.search(r'Serial  #:(\S+)', line)
-                if match2:
-                    serial_num = match2.group(1)
-                    return serial_num
-        except:
-            return ""
+    def parse_serialnum(self, data, unit=None):
+        if unit:
+            match = re.search(r'UNIT\s+%s: SL .*?Serial\s+#:\s*(\S+)' % re.escape(unit), data, re.DOTALL | re.M)
+            if match:
+                return match.group(1)
+
+        for pattern in [r'^System [Ss]erial [Nn]umber\s*:\s*(\S+)', r'Serial\s+#:\s*(\S+)']:
+            match = re.search(pattern, data, re.M)
+            if match:
+                return match.group(1)
+
+        return ""
 
     def parse_version(self, data):
-        match = re.search(r'SW: Version ([0-9]+.[0-9]+.[0-9a-zA-Z]+)', data)
+        match = re.search(r'SW:\s+Version\s+([^\s,]+)', data)
         if match:
             return match.group(1)
 
@@ -190,7 +207,7 @@ class Default(FactsBase):
             return match.group(1)
 
     def parse_model(self, data):
-        match = re.search(r'HW: (\S+ \S+)', data, re.M)
+        match = re.search(r'^\s*HW:\s+(.+)$', data, re.M)
         if match:
             return match.group(1)
 
@@ -200,19 +217,31 @@ class Default(FactsBase):
             return match.group(1)
 
     def parse_unit(self, data):
-        match = re.search(r'.*  (active|alone)  .*', data)
+        match = re.search(r'^\s*(\d+)\s{2,}(\S+)\s{2,}(active|alone)\b', data, re.M | re.I)
         if match:
-            det = match.group(0)
-            unit = det.split('  ')[0]
-            model = det.split('  ')[1]
-            return {'Unit': unit, 'model': model.split(' ')[1]}
+            return {'Unit': match.group(1), 'model': match.group(2)}
+
+        match = re.search(r'UNIT\s+(\d+):\s+SL\s+\d+:\s+(\S+)', data, re.M | re.I)
+        if match:
+            return {'Unit': match.group(1), 'model': match.group(2)}
+
+        return dict()
+
+    def parse_primary_unit(self, data):
+        match = re.search(r'UNIT\s+(\d+):\s+SL\s+\d+:', data, re.M | re.I)
+        if match:
+            return match.group(1)
+
+        return ""
 
     def parse_stacks(self, data):
-        match = re.findall(r'UNIT [1-9]+: SL [1-9]+: (\S+)', data, re.M)
+        match = re.findall(r'UNIT [1-9]+: SL [1-9]+: (\S+)', data, re.M | re.I)
         if match:
             self.facts['stacked_models'] = match
 
-        match = re.findall(r'^System [Ss]erial [Nn]umber\s+: (\S+)', data, re.M)
+        match = re.findall(r'Serial\s+#:\s*(\S+)', data, re.M)
+        if not match:
+            match = re.findall(r'^System [Ss]erial [Nn]umber\s*:\s*(\S+)', data, re.M)
         if match:
             self.facts['stacked_serialnums'] = match
 
@@ -364,32 +393,53 @@ class Interfaces(FactsBase):
 
     def populate_ipv6_interfaces(self, data):
         parts = data.split("\n")
+        key = None
+        interface_type = None
         for line in parts:
-            match = re.match(r'\W*interface \S+ (\S+)', line)
+            match = re.match(r'\W*interface (\S+) (\S+)', line)
             if match:
-                key = match.group(0)
-                try:
-                    self.facts['interfaces'][key]['ipv6'] = list()
-                    self.facts['interfaces'][key]['ipv4'] = list()
-                except KeyError:
+                intf_type = match.group(1).lower()
+                intf_id = match.group(2)
+                key, interface_type = self.normalize_interface_key(intf_type, intf_id)
+                if key not in self.facts['interfaces']:
                     self.facts['interfaces'][key] = dict()
+                if 'ipv6' not in self.facts['interfaces'][key]:
                     self.facts['interfaces'][key]['ipv6'] = list()
-                    self.facts['interfaces'][key]['ipv4'] = list()
-                self.facts['interfaces'][key]['ipv6'] = list()
-                self.facts['interfaces'][key]['ipv4'] = list()
-                interface_type = key.split(' ')
-                interface_type = ' '.join((interface_type[1], interface_type[2]))
                 continue
+
+            if key is None:
+                continue
+
             match = re.match(r'\W+ipv6 address (\S+)/(\S+)', line)
             match_ipv4 = re.match(r'\W+ip address (\S+) (\S+)', line)
 
             if match_ipv4:
                 self.add_ip_address(match_ipv4.group(1), "ipv4", str(interface_type))
-                self.facts['interfaces'][key]['ipv4'].append({"address": match_ipv4.group(1), "subnet": match_ipv4.group(2)})
+                ipv4 = {"address": match_ipv4.group(1), "subnet": match_ipv4.group(2)}
+                if 'ipv4' not in self.facts['interfaces'][key]:
+                    self.facts['interfaces'][key]['ipv4'] = ipv4
+                elif isinstance(self.facts['interfaces'][key]['ipv4'], list):
+                    if ipv4 not in self.facts['interfaces'][key]['ipv4']:
+                        self.facts['interfaces'][key]['ipv4'].append(ipv4)
+                elif self.facts['interfaces'][key]['ipv4'] != ipv4:
+                    self.facts['interfaces'][key]['ipv4'] = [self.facts['interfaces'][key]['ipv4'], ipv4]
 
             if match:
                 self.add_ip_address(match.group(1), "ipv6", str(interface_type))
-                self.facts['interfaces'][key]['ipv6'].append({"address": match.group(1), "subnet": match.group(2)})
+                ipv6 = {"address": match.group(1), "subnet": match.group(2)}
+                if ipv6 not in self.facts['interfaces'][key]['ipv6']:
+                    self.facts['interfaces'][key]['ipv6'].append(ipv6)
+
+    def normalize_interface_key(self, interface_type, interface_id):
+        if interface_type == 'ethernet':
+            return interface_id, interface_id
+        if interface_type == 'management':
+            return 'mgmt' + interface_id, 'management ' + interface_id
+        if interface_type == 've':
+            return 've' + interface_id, 've ' + interface_id
+        if interface_type == 'lag':
+            return interface_id, 'lag ' + interface_id
+        return interface_type + interface_id, interface_type + ' ' + interface_id
 
     def add_ip_address(self, address, family, interface_type):
         if family == 'ipv4':

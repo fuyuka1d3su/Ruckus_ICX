@@ -462,13 +462,17 @@ class Interfaces(FactsBase):
     def parse_neighbors(self, neighbors):
         facts = dict()
         for entry in neighbors.split('Local '):
-            if entry == '':
+            entry = entry.strip()
+            if not entry:
                 continue
             intf = self.parse_lldp_intf(entry)
+            if not intf:
+                continue
             if intf not in facts:
                 facts[intf] = list()
             fact = dict()
             fact['Port ID'] = self.parse_lldp_portid(entry)
+            fact['Port Description'] = self.parse_lldp_port_desc(entry)
             fact['System name'] = self.parse_lldp_system_name(entry)
             fact['System description'] = self.parse_lldp_system_desc(entry)
             fact['Neighbor'] = self.parse_lldp_neighbor(entry)
@@ -543,9 +547,9 @@ class Interfaces(FactsBase):
             return match.group(1)
 
     def parse_lldp_intf(self, data):
-        match = re.search(r'^port: (.+)$', data, re.M)
+        match = re.search(r'^port:\s*(.+)$', data, re.M | re.I)
         if match:
-            return match.group(1)
+            return match.group(1).strip()
 
     def parse_lldp_system_name(self, data):
         match = re.search(r'System name\s*:\s*\"?(.*?)\"?$', data, re.M | re.I)
@@ -554,6 +558,11 @@ class Interfaces(FactsBase):
 
     def parse_lldp_portid(self, data):
         match = re.search(r'Port ID.*: *(.+)$', data, re.M | re.I)
+        if match:
+            return match.group(1)
+
+    def parse_lldp_port_desc(self, data):
+        match = re.search(r'Port description\s*:\s*\"?(.*?)\"?$', data, re.M | re.I)
         if match:
             return match.group(1)
 

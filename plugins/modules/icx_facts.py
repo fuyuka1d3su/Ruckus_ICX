@@ -473,6 +473,7 @@ class Interfaces(FactsBase):
             fact = dict()
             fact['Port ID'] = self.parse_lldp_portid(entry)
             fact['Port Description'] = self.parse_lldp_port_desc(entry)
+            fact['System capabilities'] = self.parse_lldp_system_capabilities(entry)
             fact['System name'] = self.parse_lldp_system_name(entry)
             fact['System description'] = self.parse_lldp_system_desc(entry)
             fact['Neighbor'] = self.parse_lldp_neighbor(entry)
@@ -563,6 +564,11 @@ class Interfaces(FactsBase):
 
     def parse_lldp_port_desc(self, data):
         match = re.search(r'Port description\s*:\s*\"?(.*?)\"?$', data, re.M | re.I)
+        if match:
+            return match.group(1)
+
+    def parse_lldp_system_capabilities(self, data):
+        match = re.search(r'System capabilities\s*:\s*\"?(.*?)\"?$', data, re.M | re.I)
         if match:
             return match.group(1)
 

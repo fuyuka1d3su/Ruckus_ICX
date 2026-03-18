@@ -153,7 +153,6 @@ class TestICXSystemModule(TestICXModule):
                 'tacacs-server host ansible.com'
             ]
             self.execute_module(changed=True, commands=commands)
-
         else:
             commands = [
                 'hostname ruckus',
@@ -162,3 +161,50 @@ class TestICXSystemModule(TestICXModule):
                 'tacacs-server host ansible.com'
             ]
             self.execute_module(changed=True, commands=commands)
+
+    def test_parse_aaa_servers_ignores_global_radius_settings(self):
+        config = """
+radius-server dead-time 1
+radius-server accounting interim-updates
+radius-server accounting interim-interval 5
+radius-server host 172.16.1.10 auth-port 1812 acct-port 1813 default key XXX dot1x mac-auth web-auth
+"""
+        self.assertEqual(
+            icx_system.parse_aaa_servers(config),
+            [dict(
+                type='radius',
+                hostname='172.16.1.10',
+                auth_port_type='auth-port',
+                auth_port_num='1812',
+                acct_port_num='1813',
+                acct_type='default',
+                auth_key=None,
+                auth_key_type={'dot1x', 'mac-auth', 'web-auth'}
+            )]
+        )
+
+    def test_icx_system_absent_with_global_radius_settings(self):
+        set_module_args(dict(
+            aaa_servers=[dict(
+                type='radius',
+                hostname='172.16.1.10',
+                auth_port_type='auth-port',
+                auth_port_num='1812',
+                acct_port_num='1813',
+                acct_type='default',
+                auth_key='doesntmatter',
+                auth_key_type=['dot1x', 'mac-auth', 'web-auth']
+            )],
+            state='absent',
+            check_running_config=True
+        ))
+        self.get_config.return_value = """
+radius-server dead-time 1
+radius-server accounting interim-updates
+radius-server accounting interim-interval 5
+radius-server host 172.16.1.10 auth-port 1812 acct-port 1813 default key XXX dot1x mac-auth web-auth
+"""
+        self.load_config.return_value = None
+
+        result = self.changed(changed=True)
+        self.assertEqual(result['commands'], ['no radius-server host 172.16.1.10'])

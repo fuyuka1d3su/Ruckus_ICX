@@ -334,52 +334,56 @@ def parse_aaa_servers(config):
     obj = []
     for line in configlines:
         auth_key_type = []
-        if 'radius-server' in line or 'tacacs-server' in line:
-            aaa_type = 'radius' if 'radius-server' in line else 'tacacs'
-            match = re.search(r'(host ipv6 (\S+))|(host (\S+))', line)
-            if match:
-                hostname = match.group(2) if match.group(2) is not None else match.group(4)
-            match = re.search(r'auth-port ([0-9]+)', line)
-            if match:
-                auth_port_num = match.group(1)
-            else:
-                auth_port_num = None
-            match = re.search(r'acct-port ([0-9]+)', line)
-            if match:
-                acct_port_num = match.group(1)
-            else:
-                acct_port_num = None
-            match = re.search(r'acct-port [0-9]+ (\S+)', line)
+        if not (line.startswith('radius-server host ') or line.startswith('tacacs-server host ')):
+            continue
+
+        aaa_type = 'radius' if line.startswith('radius-server host ') else 'tacacs'
+        match = re.search(r'host(?: ipv6)? (\S+)', line)
+        if not match:
+            continue
+        hostname = match.group(1)
+
+        match = re.search(r'auth-port ([0-9]+)', line)
+        if match:
+            auth_port_num = match.group(1)
+        else:
+            auth_port_num = None
+        match = re.search(r'acct-port ([0-9]+)', line)
+        if match:
+            acct_port_num = match.group(1)
+        else:
+            acct_port_num = None
+        match = re.search(r'acct-port [0-9]+ (\S+)', line)
+        if match:
+            acct_type = match.group(1)
+        else:
+            acct_type = None
+        if aaa_type == 'tacacs':
+            match = re.search(r'auth-port [0-9]+ (\S+)', line)
             if match:
                 acct_type = match.group(1)
             else:
                 acct_type = None
-            if aaa_type == 'tacacs':
-                match = re.search(r'auth-port [0-9]+ (\S+)', line)
-                if match:
-                    acct_type = match.group(1)
-                else:
-                    acct_type = None
-            match = re.search(r'(dot1x)', line)
-            if match:
-                auth_key_type.append('dot1x')
-            match = re.search(r'(mac-auth)', line)
-            if match:
-                auth_key_type.append('mac-auth')
-            match = re.search(r'(web-auth)', line)
-            if match:
-                auth_key_type.append('web-auth')
+        match = re.search(r'(dot1x)', line)
+        if match:
+            auth_key_type.append('dot1x')
+        match = re.search(r'(mac-auth)', line)
+        if match:
+            auth_key_type.append('mac-auth')
+        match = re.search(r'(web-auth)', line)
+        if match:
+            auth_key_type.append('web-auth')
 
-            obj.append({
-                'type': aaa_type,
-                'hostname': hostname,
-                'auth_port_type': 'auth-port',
-                'auth_port_num': auth_port_num,
-                'acct_port_num': acct_port_num,
-                'acct_type': acct_type,
-                'auth_key': None,
-                'auth_key_type': set(auth_key_type) if len(auth_key_type) > 0 else None
-            })
+        obj.append({
+            'type': aaa_type,
+            'hostname': hostname,
+            'auth_port_type': 'auth-port',
+            'auth_port_num': auth_port_num,
+            'acct_port_num': acct_port_num,
+            'acct_type': acct_type,
+            'auth_key': None,
+            'auth_key_type': set(auth_key_type) if len(auth_key_type) > 0 else None
+        })
 
     return obj
 

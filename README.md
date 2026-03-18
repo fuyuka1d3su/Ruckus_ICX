@@ -33,6 +33,7 @@ commscope.icx.icx_l3_interface|Manage Layer-3 interfaces on Ruckus ICX 7K series
 commscope.icx.icx_linkagg|Manage link aggregation groups on Ruckus ICX 7K series switches
 commscope.icx.icx_lldp|Manage LLDP configuration on Ruckus ICX 7K series switches
 commscope.icx.icx_logging|Manage logging on Ruckus ICX 7K series switches
+commscope.icx.icx_ntp|Manage NTP server configuration on Ruckus ICX 7K series switches
 commscope.icx.icx_ping|Tests reachability using ping from Ruckus ICX 7K series switches
 commscope.icx.icx_qos|Configures qos features on ICX 7K series switches
 commscope.icx.icx_rate_limit|Configures rate limit on ICX 7K switch

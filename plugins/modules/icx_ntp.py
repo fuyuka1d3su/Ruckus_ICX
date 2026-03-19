@@ -46,13 +46,13 @@ EXAMPLES = """
 - name: Configure NTP servers
   community.network.icx_ntp:
     servers:
-      - 10.126.11.12
-      - 10.138.11.12
+      - 192.168.100.10
+      - 192.168.100.11
 
 - name: Remove one NTP server
   community.network.icx_ntp:
     servers:
-      - 10.126.11.12
+      - 192.168.100.10
     state: absent
 """
 
@@ -63,7 +63,7 @@ commands:
   type: list
   sample:
     - ntp
-    - server 10.126.11.12
+    - server 192.168.100.10
 """
 
 
@@ -107,7 +107,10 @@ def parse_ntp_servers(config):
 
 def map_config_to_obj(module):
     compare = module.params['check_running_config']
-    config = get_config(module, None, compare=compare)
+    if not compare:
+        return {'servers': []}
+
+    config = get_config(module, flags=['| begin ntp'], compare=compare)
     return {'servers': parse_ntp_servers(config)}
 
 

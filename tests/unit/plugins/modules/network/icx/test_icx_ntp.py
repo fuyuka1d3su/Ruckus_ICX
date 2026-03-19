@@ -43,34 +43,36 @@ class TestICXNtpModule(TestICXModule):
         config = load_fixture('icx_ntp_config.cfg')
         self.assertEqual(
             icx_ntp.parse_ntp_servers(config),
-            ['172.16.1.10', '172.16.1.11']
+            ['192.168.100.10', '192.168.100.11']
         )
 
     def test_icx_ntp_add_servers_without_compare(self):
-        set_module_args(dict(servers=['172.16.1.10', '172.16.1.11']))
+        set_module_args(dict(servers=['192.168.100.10', '192.168.100.11'], check_running_config=False))
         result = self.execute_module(changed=True, sort=False)
-        self.assertEqual(result['commands'], ['ntp', 'server 172.16.1.10', 'server 172.16.1.11'])
+        self.assertEqual(result['commands'], ['ntp', 'server 192.168.100.10', 'server 192.168.100.11'])
+        self.get_config.assert_not_called()
 
     def test_icx_ntp_reconcile_servers(self):
         set_module_args(dict(
-            servers=['172.16.1.10', '10.200.1.1'],
+            servers=['192.168.100.10', '192.168.100.12'],
             check_running_config=True
         ))
         result = self.execute_module(changed=True, sort=False)
-        self.assertEqual(result['commands'], ['ntp', 'no server 172.16.1.11', 'server 10.200.1.1'])
+        self.assertEqual(result['commands'], ['ntp', 'no server 192.168.100.11', 'server 192.168.100.12'])
+        self.assertEqual(self.get_config.call_args[1]['flags'], ['| begin ntp'])
 
     def test_icx_ntp_remove_servers(self):
         set_module_args(dict(
-            servers=['172.16.1.11'],
+            servers=['192.168.100.11'],
             state='absent',
             check_running_config=True
         ))
         result = self.execute_module(changed=True, sort=False)
-        self.assertEqual(result['commands'], ['ntp', 'no server 172.16.1.11'])
+        self.assertEqual(result['commands'], ['ntp', 'no server 192.168.100.11'])
 
     def test_icx_ntp_no_change(self):
         set_module_args(dict(
-            servers=['172.16.1.10', '172.16.1.11'],
+            servers=['192.168.100.10', '192.168.100.11'],
             check_running_config=True
         ))
         self.execute_module(changed=False)

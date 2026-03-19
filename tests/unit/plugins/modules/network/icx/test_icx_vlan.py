@@ -39,8 +39,11 @@ class TestICXVlanModule(TestICXModule):
         def fake_exec(module, command):
             if command == 'skip':
                 return (0, '', None)
-            if command == 'show run vlan 727':
-                return (0, 'Error - vlan 727 is not configured', None)
+            if command == 'show vlan brief':
+                return (0, '\n'.join([
+                    'System-max vlan Params: Max(4095) Default(64) Current(64)',
+                    'VLANs Configured :1 3 6 10 21',
+                ]), None)
             raise AssertionError('unexpected command: %s' % command)
 
         self.exec_command.side_effect = fake_exec
@@ -52,13 +55,18 @@ class TestICXVlanModule(TestICXModule):
         self.get_config.assert_not_called()
         self.assertEqual(
             [call[0][1] for call in self.exec_command.call_args_list],
-            ['skip', 'show run vlan 727']
+            ['skip', 'show vlan brief']
         )
 
     def test_icx_vlan_existing_target_uses_targeted_queries(self):
         def fake_exec(module, command):
             if command == 'skip':
                 return (0, '', None)
+            if command == 'show vlan brief':
+                return (0, '\n'.join([
+                    'System-max vlan Params: Max(4095) Default(64) Current(64)',
+                    'VLANs Configured :1 3 6 10 21',
+                ]), None)
             if command == 'show run vlan 3':
                 return (0, '\n'.join([
                     'vlan 3 name vlan by port',
@@ -67,6 +75,8 @@ class TestICXVlanModule(TestICXModule):
                     ' spanning-tree',
                     '!',
                 ]), None)
+            if command == 'show vlan 3':
+                return (0, 'PORT-VLAN 3, Name vlan, Priority level0, Spanning tree On', None)
             raise AssertionError('unexpected command: %s' % command)
 
         self.exec_command.side_effect = fake_exec
@@ -77,33 +87,27 @@ class TestICXVlanModule(TestICXModule):
         self.get_config.assert_not_called()
         self.assertEqual(
             [call[0][1] for call in self.exec_command.call_args_list],
-            ['skip', 'show run vlan 3']
+            ['skip', 'show vlan brief', 'show run vlan 3', 'show vlan 3']
         )
 
-    def test_icx_vlan_purge_still_discovers_all_vlans(self):
+    def test_icx_vlan_existing_target_renames_vlan(self):
         def fake_exec(module, command):
             if command == 'skip':
                 return (0, '', None)
             if command == 'show vlan brief':
                 return (0, '\n'.join([
                     'System-max vlan Params: Max(4095) Default(64) Current(64)',
-                    'VLANs Configured :1 3 6',
+                    'VLANs Configured :1 727',
                 ]), None)
-            if command == 'show run vlan 1':
-                return (0, 'vlan 1 by port\n!\n', None)
-            if command == 'show run vlan 3':
-                return (0, 'vlan 3 name keep by port\n!\n', None)
-            if command == 'show run vlan 6':
-                return (0, 'vlan 6 name remove by port\n!\n', None)
+            if command == 'show run vlan 727':
+                return (0, 'vlan 727 name VLAN-WYSI by port\n!\n!\n', None)
+            if command == 'show vlan 727':
+                return (0, 'PORT-VLAN 727, Name VLAN-WYSI, Priority level0, Off', None)
             raise AssertionError('unexpected command: %s' % command)
 
         self.exec_command.side_effect = fake_exec
 
-        set_module_args(dict(vlan_id=3, purge=True, check_running_config=True))
+        set_module_args(dict(name='VLAN-WYSI-1', vlan_id=727, check_running_config=True))
         result = self.execute_module(changed=True, sort=False)
 
-        self.assertEqual(result['commands'], ['no vlan 6'])
-        self.assertEqual(
-            [call[0][1] for call in self.exec_command.call_args_list],
-            ['skip', 'show vlan brief', 'show run vlan 1', 'show run vlan 3', 'show run vlan 6']
-        )
+        self.assertEqual(result['commands'], ['vlan 727 name VLAN-WYSI-1'])

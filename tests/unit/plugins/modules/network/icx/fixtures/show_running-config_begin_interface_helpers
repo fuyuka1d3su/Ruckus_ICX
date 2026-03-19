@@ -1,0 +1,14 @@
+interface ve 1
+ ip address 10.1.2.1 255.255.255.0
+ ip helper-address 1 192.168.50.11
+ ip helper-address 2 192.168.50.12
+ ip helper-address 3 192.168.50.21
+!
+interface ve 1999
+ ip address 10.199.99.1 255.255.255.0
+ ip helper-address 1 192.168.50.11
+ ip helper-address 2 192.168.50.12
+ ip helper-address 5 192.168.50.21
+ ip helper-address 6 192.168.50.22
+!
+end

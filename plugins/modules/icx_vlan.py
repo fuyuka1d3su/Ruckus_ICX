@@ -321,6 +321,10 @@ def search_obj_in_list(vlan_id, lst):
 def parse_vlan_brief(module, vlan_id):
     command = 'show run vlan %s' % vlan_id
     rc, out, err = exec_command(module, command)
+    return parse_vlan_brief_output(out)
+
+
+def parse_vlan_brief_output(out):
     lines = out.split('\n')
     untagged_ports = list()
     untagged_lags = list()
@@ -573,8 +577,7 @@ def map_obj_to_commands(updates, module):
                 commands = []
 
     if purge:
-        # commands = []
-        vlans = parse_vlan_id(module)
+        vlans = [str(item['vlan_id']) for item in have] if have else parse_vlan_id(module)
         for h in vlans:
             obj_in_want = search_obj_in_list(h, want)
             if not obj_in_want and h != '1':
@@ -591,8 +594,28 @@ def parse_name_argument(module, item):
         return match.group(1)
 
 
+def get_vlan_config(module, vlan_id):
+    command = 'show run vlan {0}'.format(vlan_id)
+    rc, out, err = exec_command(module, command)
+    return out
+
+
+def vlan_exists(config, vlan_id):
+    return re.search(r'^vlan {0}(?:\s|$)'.format(re.escape(str(vlan_id))), config, re.M) is not None
+
+
+def parse_name_from_running_config(config, vlan_id):
+    match = re.search(r'^vlan {0}(?: name (\S+))?(?:\s|$)'.format(re.escape(str(vlan_id))), config, re.M)
+    if match:
+        return match.group(1)
+
+
 def parse_interfaces_argument(module, item, port_type):
     untagged_ports, untagged_lags, tagged_ports, tagged_lags = parse_vlan_brief(module, item)
+    return build_interface_list_from_brief(untagged_ports, untagged_lags, tagged_ports, tagged_lags, port_type)
+
+
+def build_interface_list_from_brief(untagged_ports, untagged_lags, tagged_ports, tagged_lags, port_type):
     ports = []
     if port_type == "interfaces":
         if untagged_ports:
@@ -620,19 +643,49 @@ def parse_config_argument(config, arg):
         return False
 
 
-def map_config_to_obj(module):
-    config = get_config(module)
-    vlans = parse_vlan_id(module)
+def map_config_to_obj(module, want=None):
+    want = want or map_params_to_obj(module)
     instance = list()
+    needs_config = any(
+        item.get('ip_dhcp_snooping') is not None or item.get('ip_arp_inspection') is not None
+        for item in want
+    )
+    config = get_config(module) if needs_config else ''
 
-    for item in set(vlans):
+    if module.params['purge']:
+        for item in sorted(set(parse_vlan_id(module)), key=int):
+            vlan_config = get_vlan_config(module, item)
+            untagged_ports, untagged_lags, tagged_ports, tagged_lags = parse_vlan_brief_output(vlan_config)
+            obj = {
+                'vlan_id': item,
+                'name': parse_name_from_running_config(vlan_config, item),
+                'interfaces': build_interface_list_from_brief(untagged_ports, untagged_lags, tagged_ports, tagged_lags, 'interfaces'),
+                'tagged': build_interface_list_from_brief(untagged_ports, untagged_lags, tagged_ports, tagged_lags, 'tagged'),
+                'ip_dhcp_snooping': parse_config_argument(config, 'ip dhcp snooping vlan {0}'.format(item)),
+                'ip_arp_inspection': parse_config_argument(config, 'ip arp inspection vlan {0}'.format(item)),
+            }
+            instance.append(obj)
+        return instance
+
+    seen = set()
+    for item in want:
+        vlan_id = str(item['vlan_id'])
+        if vlan_id in seen:
+            continue
+        seen.add(vlan_id)
+
+        vlan_config = get_vlan_config(module, vlan_id)
+        if not vlan_exists(vlan_config, vlan_id):
+            continue
+
+        untagged_ports, untagged_lags, tagged_ports, tagged_lags = parse_vlan_brief_output(vlan_config)
         obj = {
-            'vlan_id': item,
-            'name': parse_name_argument(module, item),
-            'interfaces': parse_interfaces_argument(module, item, 'interfaces'),
-            'tagged': parse_interfaces_argument(module, item, 'tagged'),
-            'ip_dhcp_snooping': parse_config_argument(config, 'ip dhcp snooping vlan {0}'.format(item)),
-            'ip_arp_inspection': parse_config_argument(config, 'ip arp inspection vlan {0}'.format(item)),
+            'vlan_id': vlan_id,
+            'name': parse_name_from_running_config(vlan_config, vlan_id),
+            'interfaces': build_interface_list_from_brief(untagged_ports, untagged_lags, tagged_ports, tagged_lags, 'interfaces'),
+            'tagged': build_interface_list_from_brief(untagged_ports, untagged_lags, tagged_ports, tagged_lags, 'tagged'),
+            'ip_dhcp_snooping': parse_config_argument(config, 'ip dhcp snooping vlan {0}'.format(vlan_id)),
+            'ip_arp_inspection': parse_config_argument(config, 'ip arp inspection vlan {0}'.format(vlan_id)),
         }
         instance.append(obj)
     return instance
@@ -746,7 +799,7 @@ def main():
     if module.params['check_running_config'] is False:
         have = []
     else:
-        have = map_config_to_obj(module)
+        have = map_config_to_obj(module, want)
     result['have'] = have
     commands = map_obj_to_commands((want, have), module)
     result['commands'] = commands

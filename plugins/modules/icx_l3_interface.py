@@ -43,18 +43,24 @@ options:
   replace:
     description:
       - Replaces the configured primary IP address on the interface.
-    choices: ['yes', 'no']
-    type: str
+    type: bool
   secondary:
     description:
       - Specifies that the configured address is a secondary IP address.
         If this keyword is omitted, the configured address is the primary IP address.
-    choices: ['yes', 'no']
-    type: str
+    type: bool
+  helper_addresses:
+    description:
+      - List of DHCP relay helper addresses to configure on the interface.
+      - When I(state=present), the configured helper addresses are reconciled to match this list.
+      - When I(state=absent), the listed helper addresses are removed.
+      - Setting this to an empty list with I(state=present) removes all helper addresses from the interface.
+    type: list
+    elements: str
   aggregate:
     description:
       - List of Layer-3 interfaces definitions. Each of the entry in aggregate list should
-        define name of interface C(name) and a optional C(ipv4) or C(ipv6) address.
+        define name of interface C(name) and an optional C(ipv4), C(ipv6), or C(helper_addresses).
     type: list
     suboptions:
       name:
@@ -82,14 +88,17 @@ options:
       replace:
         description:
           - Replaces the configured primary IP address on the interface.
-        choices: ['yes', 'no']
-        type: str
+        type: bool
       secondary:
         description:
           - Specifies that the configured address is a secondary IP address.
             If this keyword is omitted, the configured address is the primary IP address.
-        choices: ['yes', 'no']
-        type: str
+        type: bool
+      helper_addresses:
+        description:
+          - List of DHCP relay helper addresses to configure on the interface.
+        type: list
+        elements: str
       state:
         description:
           - State of the Layer-3 interface configuration. It indicates if the configuration should
@@ -149,6 +158,12 @@ EXAMPLES = """
   community.network.icx_l3_interface:
     name: ethernet 1/1/1
     ipv6: "fd5d:12c9:2201:1::1/64"
+- name: Configure DHCP relay helper addresses on a VE
+  community.network.icx_l3_interface:
+    name: ve 727
+    helper_addresses:
+      - 192.168.50.11
+      - 192.168.50.12
 - name: Set IP addresses on aggregate
   community.network.icx_l3_interface:
     aggregate:
@@ -187,7 +202,11 @@ from ansible.module_utils.connection import exec_command
 from ansible_collections.commscope.icx.plugins.module_utils.network.icx.icx import get_config, load_config
 from ansible_collections.ansible.netcommon.plugins.module_utils.network.common.config import NetworkConfig
 from ansible_collections.ansible.netcommon.plugins.module_utils.network.common.utils import remove_default_spec
-from ansible_collections.ansible.netcommon.plugins.module_utils.network.common.utils import is_netmask, is_masklen, to_netmask, to_masklen
+try:
+    from ansible_collections.ansible.netcommon.plugins.module_utils.network.common.utils import is_netmask, is_masklen, to_netmask, to_masklen
+except ImportError:
+    # ansible.netcommon >= 8 removed these helpers; ansible-core still ships them.
+    from ansible.module_utils.common.network import is_netmask, is_masklen, to_netmask, to_masklen
 
 
 def validate_ipv4(value, module):
@@ -208,6 +227,21 @@ def validate_ipv6(value, module):
         else:
             if not 0 <= int(address[1]) <= 128:
                 module.fail_json(msg='invalid value for mask: %s, mask should be in range 0-128' % address[1])
+
+
+def validate_helper_addresses(value, module):
+    if value is None:
+        return
+
+    duplicates = set()
+    seen = set()
+    for address in value:
+        if address in seen:
+            duplicates.add(address)
+        seen.add(address)
+
+    if duplicates:
+        module.fail_json(msg='duplicate helper_addresses are not allowed: %s' % ', '.join(sorted(duplicates)))
 
 
 def validate_param_values(module, obj, param=None):
@@ -236,13 +270,14 @@ def map_params_to_obj(module):
             'name': module.params['name'],
             'ipv4': module.params['ipv4'],
             'ipv6': module.params['ipv6'],
+            'helper_addresses': module.params['helper_addresses'],
             'state': module.params['state'],
             'replace': module.params['replace'],
             'mode': module.params['mode'],
             'secondary': module.params['secondary'],
         })
 
-        validate_param_values(module, obj)
+        validate_param_values(module, obj[0], obj[0])
 
     return obj
 
@@ -272,27 +307,109 @@ def search_obj_in_list(name, lst):
     return None
 
 
-def map_config_to_obj(module):
-    compare = module.params['check_running_config']
-    config = get_config(module, flags=['| begin interface'], compare=compare)
-    configobj = NetworkConfig(indent=1, contents=config)
+def parse_helper_addresses(configobj, name):
+    cfg = configobj['interface %s' % name]
+    cfg = '\n'.join(cfg.children)
 
-    match = re.findall(r'^interface (\S+ \S+)', config, re.M)
-    if not match:
+    helpers = []
+    matches = re.finditer(r'^ip helper-address (\d+) (\S+)$', cfg, re.M)
+    for match in matches:
+        helpers.append({
+            'index': int(match.group(1)),
+            'address': match.group(2),
+        })
+
+    return sorted(helpers, key=lambda item: item['index'])
+
+
+def diff_helper_addresses(want, have):
+    adds = [address for address in want if address not in [item['address'] for item in have]]
+    removes = [item for item in have if item['address'] not in want]
+    return adds, removes
+
+
+def get_next_helper_index(used_indices):
+    index = 1
+    while index in used_indices:
+        index += 1
+    used_indices.add(index)
+    return index
+
+
+def get_target_interface_names(want):
+    targets = []
+    seen = set()
+
+    for item in want:
+        name = item['name']
+        if name not in seen:
+            seen.add(name)
+            targets.append(name)
+
+    return targets
+
+
+def iter_interface_blocks(config):
+    current_name = None
+    current_lines = []
+
+    for line in config.splitlines():
+        if line.startswith('interface '):
+            if current_name is not None:
+                yield current_name, '\n'.join(current_lines)
+            current_name = line[len('interface '):].strip()
+            current_lines = [line]
+            continue
+
+        if current_name is None:
+            continue
+
+        current_lines.append(line)
+        if line.strip() == '!':
+            yield current_name, '\n'.join(current_lines)
+            current_name = None
+            current_lines = []
+
+    if current_name is not None and current_lines:
+        yield current_name, '\n'.join(current_lines)
+
+
+def map_config_to_obj(module, want=None):
+    compare = module.params['check_running_config']
+    if not compare:
         return list()
 
+    want = want or map_params_to_obj(module)
+    targets = get_target_interface_names(want)
+    flags = ['| begin interface']
+    if len(targets) == 1:
+        flags = ['| begin interface %s' % targets[0]]
+
+    config = get_config(module, flags=flags, compare=compare)
+    blocks = list(iter_interface_blocks(config))
+    if targets:
+        target_set = set(targets)
+        blocks = [block for block in blocks if block[0] in target_set]
+
+    if not blocks:
+        return list()
+
+    configobj = NetworkConfig(indent=1, contents='\n'.join(block for _, block in blocks))
     instances = list()
 
-    for item in set(match):
+    for item, _block in blocks:
         ipv4 = parse_config_argument(configobj, item, 'ip address')
         if ipv4:
             address = ipv4.strip().split(' ')
             if len(address) == 2 and is_netmask(address[1]):
                 ipv4 = '{0}/{1}'.format(address[0], to_text(to_masklen(address[1])))
+        helper_entries = parse_helper_addresses(configobj, item)
         obj = {
             'name': item,
             'ipv4': ipv4,
             'ipv6': parse_config_argument(configobj, item, 'ipv6 address'),
+            'helper_addresses': [item['address'] for item in helper_entries],
+            'helper_address_slots': helper_entries,
             'state': 'present'
         }
         instances.append(obj)
@@ -307,24 +424,20 @@ def map_obj_to_commands(updates, module):
         name = w['name']
         ipv4 = w['ipv4']
         ipv6 = w['ipv6']
+        helper_addresses = w.get('helper_addresses')
         state = w['state']
-        if 'replace' in w:
-            replace = w['replace'] == 'yes'
-        else:
-            replace = False
+        replace = bool(w.get('replace'))
         if w['mode'] is not None:
             mode = ' ' + w['mode']
         else:
             mode = ''
-        if w['secondary'] is not None:
-            secondary = w['secondary'] == 'yes'
-        else:
-            secondary = False
+        secondary = bool(w.get('secondary'))
 
         interface = 'interface ' + name
         commands.append(interface)
 
         obj_in_have = search_obj_in_list(name, have)
+        have_helper_slots = obj_in_have.get('helper_address_slots', []) if obj_in_have else []
         if state == 'absent' and have == []:
             if ipv4:
                 address = ipv4.split('/')
@@ -333,6 +446,8 @@ def map_obj_to_commands(updates, module):
                 commands.append('no ip address {ip}'.format(ip=ipv4))
             if ipv6:
                 commands.append('no ipv6 address {ip}'.format(ip=ipv6))
+            if helper_addresses and not module.params['check_running_config']:
+                module.fail_json(msg='check_running_config=true is required to remove helper_addresses')
 
         elif state == 'absent' and obj_in_have:
             if obj_in_have['ipv4']:
@@ -344,6 +459,10 @@ def map_obj_to_commands(updates, module):
             if obj_in_have['ipv6']:
                 if ipv6:
                     commands.append('no ipv6 address {ip}'.format(ip=ipv6))
+            if helper_addresses:
+                for helper in have_helper_slots:
+                    if helper['address'] in helper_addresses:
+                        commands.append('no ip helper-address {index} {address}'.format(index=helper['index'], address=helper['address']))
 
         elif state == 'present':
             if ipv4:
@@ -356,6 +475,18 @@ def map_obj_to_commands(updates, module):
             if ipv6:
                 if obj_in_have is None or obj_in_have.get('ipv6') is None or ipv6.lower() not in [addr.lower() for addr in obj_in_have['ipv6']]:
                     commands.append('ipv6 address {ip}'.format(ip=ipv6))
+
+            if helper_addresses is not None:
+                adds, removes = diff_helper_addresses(helper_addresses, have_helper_slots)
+                used_indices = set(item['index'] for item in have_helper_slots)
+
+                for helper in removes:
+                    commands.append('no ip helper-address {index} {address}'.format(index=helper['index'], address=helper['address']))
+                    used_indices.discard(helper['index'])
+
+                for helper_address in adds:
+                    helper_index = get_next_helper_index(used_indices)
+                    commands.append('ip helper-address {index} {address}'.format(index=helper_index, address=helper_address))
 
         if commands[-1] == interface:
             commands.pop(-1)
@@ -372,9 +503,10 @@ def main():
         name=dict(),
         ipv4=dict(),
         ipv6=dict(),
-        replace=dict(choices=['yes', 'no']),
+        helper_addresses=dict(type='list', elements='str'),
+        replace=dict(type='bool'),
         mode=dict(choices=['dynamic', 'ospf-ignore', 'ospf-passive']),
-        secondary=dict(choices=['yes', 'no']),
+        secondary=dict(type='bool'),
         check_running_config=dict(default=False, type='bool', fallback=(env_fallback, ['ANSIBLE_CHECK_ICX_RUNNING_CONFIG'])),
         state=dict(default='present',
                    choices=['present', 'absent']),
@@ -402,7 +534,7 @@ def main():
 
     result = {'changed': False}
     want = map_params_to_obj(module)
-    have = map_config_to_obj(module)
+    have = map_config_to_obj(module, want)
     commands = map_obj_to_commands((want, have), module)
 
     if commands:

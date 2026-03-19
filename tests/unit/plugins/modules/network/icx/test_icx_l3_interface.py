@@ -21,6 +21,7 @@ class TestICXFactsModule(TestICXModule):
         self.get_config = self.mock_get_config.start()
         self.mock_load_config = patch('ansible_collections.commscope.icx.plugins.modules.icx_l3_interface.load_config')
         self.load_config = self.mock_load_config.start()
+        self.running_config_fixture = 'show_running-config_begin_interface'
         self.set_running_config()
 
     def tearDown(self):
@@ -36,7 +37,7 @@ class TestICXFactsModule(TestICXModule):
             module = args
             for arg in args:
                 if arg.params['check_running_config'] is True:
-                    return load_fixture('show_running-config_begin_interface').strip()
+                    return load_fixture(self.running_config_fixture).strip()
                 else:
                     return ''
 
@@ -47,7 +48,7 @@ class TestICXFactsModule(TestICXModule):
         self.load_config.side_effect = write_config
 
     def test_icx_l3_interface_set_ipv4(self):
-        set_module_args(dict(name="ethernet 1/1/1", ipv4="192.168.1.1/24"))
+        set_module_args(dict(name="ethernet 1/1/1", ipv4="192.168.1.1/24", check_running_config=False))
         if not self.ENV_ICX_USE_DIFF:
             commands = [
                 "interface ethernet 1/1/1",
@@ -62,6 +63,8 @@ class TestICXFactsModule(TestICXModule):
                 "exit"
             ]
             self.execute_module(commands=commands, changed=True)
+
+        self.get_config.assert_not_called()
 
     def test_icx_l3_interface_set_ipv6(self):
         set_module_args(dict(name="ethernet 1/1/1", ipv6="2001:db8:85a3:0:0:0:0:1/64"))
@@ -119,3 +122,33 @@ class TestICXFactsModule(TestICXModule):
                 "exit"
             ]
             self.execute_module(commands=commands, changed=True)
+
+    def test_icx_l3_interface_set_helper_addresses(self):
+        set_module_args(dict(
+            name="ve 1",
+            helper_addresses=["192.168.50.11", "192.168.50.12"],
+            check_running_config=True
+        ))
+        commands = [
+            "interface ve 1",
+            "ip helper-address 1 192.168.50.11",
+            "ip helper-address 2 192.168.50.12",
+            "exit"
+        ]
+        self.execute_module(commands=commands, changed=True)
+        self.assertEqual(self.get_config.call_args[1]['flags'], ['| begin interface ve 1'])
+
+    def test_icx_l3_interface_reconcile_helper_addresses(self):
+        self.running_config_fixture = 'show_running-config_begin_interface_helpers'
+        set_module_args(dict(
+            name="ve 1999",
+            helper_addresses=["192.168.50.11", "192.168.50.12", "192.168.50.22", "192.168.50.67"],
+            check_running_config=True
+        ))
+        commands = [
+            "interface ve 1999",
+            "no ip helper-address 5 192.168.50.21",
+            "ip helper-address 3 192.168.50.67",
+            "exit"
+        ]
+        self.execute_module(commands=commands, changed=True)
